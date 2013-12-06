@@ -1,0 +1,15 @@
+farmboy_mysql_password: secret
+farmboy_mysql_password_refstack: secret
+roledefs:
+  apt:
+  - vagrant@192.168.33.13
+  db:
+  - vagrant@192.168.33.11
+  proxy:
+  - vagrant@192.168.33.10
+  tomcat:
+  - vagrant@192.168.33.100
+  - vagrant@192.168.33.101
+  web:
+  - vagrant@192.168.33.100
+  - vagrant@192.168.33.101
