@@ -137,6 +137,101 @@ env.farmboy_django_app = 'demo'
 #            list and locations of files used for a given module.
 env.farmboy_files = './files'
 
+import fabtools.require
+from fabric.contrib import project
+from fabric.api import roles
+from fabric.api import run
+from fabric.api import sudo
+from fabric.context_managers import cd
+
+@task
+@roles('db')
+def alembic_upgrade():
+    """Copy our alembic versions to the mysql box and execute them."""
+    local_path = './alembic'
+    password = util.load('farmboy_mysql_password_refstack')
+
+    # Make sure alembic is installed
+    fabtools.require.deb.packages(['build-essential',
+                                   'python-dev',
+                                   'libmysqlclient-dev'])
+    fabtools.require.python.package('alembic', use_sudo=True)
+    fabtools.require.python.package('mysql-python', use_sudo=True)
+
+    # Copy our alembic files over
+    project.rsync_project(local_dir=local_path,
+                          remote_dir='.',
+                          ssh_opts=('-o UserKnownHostsFile=/dev/null'
+                                    ' -o StrictHostKeyChecking=no'))
+
+    fabtools.require.files.template_file(
+        template_source = 'alembic.ini',
+        path = 'alembic.ini',
+        context  = {'password': password},
+        owner    = 'root',
+        group    = 'root',
+        mode     = '600',
+        use_sudo = True)
+
+    sudo('alembic upgrade head')
+
+
+@task
+@roles('web')
+def refstack_deps():
+    fabtools.require.python.package('pip', use_sudo=True)
+    fabtools.require.deb.packages(['build-essential',
+                                   'python-dev',
+                                   'libmysqlclient-dev'])
+    fabtools.require.python.package('mysql-python', use_sudo=True)
+
+    project.rsync_project(remote_dir='.',
+                          exclude=['logs', 'openid', 'uploads'],
+                          ssh_opts=('-o UserKnownHostsFile=/dev/null'
+                                    ' -o StrictHostKeyChecking=no'))
+    with cd('refstack'):
+        sudo('pip install -r requirements.txt')
+
+
+@task
+@roles('web')
+def refstack_deploy():
+    password = util.load('farmboy_mysql_password_refstack')
+    remote_path = run('echo $HOME/refstack')
+
+    project.rsync_project(remote_dir='.',
+                          exclude=['logs', 'openid', 'uploads'],
+                          ssh_opts=('-o UserKnownHostsFile=/dev/null'
+                                    ' -o StrictHostKeyChecking=no'))
+
+    fabtools.require.files.directory('/tmp/instance',
+                                     owner='www-data',
+                                     group='www-data',
+                                     mode='755',
+                                     use_sudo=True)
+
+    fabtools.require.files.template_file(
+        template_source = 'refstack.cfg',
+        path = '/tmp/instance/refstack.cfg',
+        context = {'password': password},
+        owner = 'www-data',
+        group = 'www-data',
+        mode = '600',
+        use_sudo = True)
+
+    fabtools.require.files.template_file(
+        template_source = util.files('gunicorn/flask'),
+        path     = '/etc/gunicorn.d/refstack',
+        context  = {'working_dir': remote_path,
+                    'wsgi_app': 'refstack.web:app',
+                    'instance_folder_path': '/tmp/instance'},
+        owner    = 'root',
+        group    = 'root',
+        mode     = '644',
+        use_sudo = True)
+
+    gunicorn.restart()
+
 
 @task(default=True)
 def demo():
@@ -147,10 +242,19 @@ def demo():
         execute(aptcacher.set_proxy)
     execute(core.install_user)
     execute(mysql.deploy)
+    execute(mysql.create_user, name='refstack', user_host='localhost')
+    execute(mysql.create_user, name='refstack', user_host='%')
+    execute(mysql.create_database,
+            name='refstack',
+            owner='refstack',
+            owner_host='%')
+    execute(alembic_upgrade)
     execute(haproxy.deploy)
     execute(nginx.deploy)
     execute(gunicorn.deploy)
-    execute(django.deploy, path=env.farmboy_django_app)
+    execute(refstack_deps)
+    execute(refstack_deploy)
+    #execute(django.deploy, path=env.farmboy_django_app)
 
     print ('Alright! Check out your site at: http://%s'
             % util.host(env.roledefs['proxy'][0]))
